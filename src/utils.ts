@@ -69,3 +69,81 @@ export function drawSequentially(ctx: CanvasRenderingContext2D, items: Drawable[
         setTimeout(drawSequentially.bind(null, ctx, items, delay, ++idx), delay);
     }
 }
+
+function memoizeMethod(descriptor: TypedPropertyDescriptor<any>) {
+    const originalValue = descriptor.value;
+    const returnedValues: WeakMap<object, any> = new WeakMap();
+  
+    descriptor.value = function(...args: any[]) {
+        let val;
+        if (returnedValues.has(this)) {
+            val = returnedValues.get(this);
+        } else {
+            val = originalValue.apply(this, args);
+            returnedValues.set(this, val);
+        }
+        return val;
+    };
+}
+  
+function memoizeGetAccessor(descriptor: TypedPropertyDescriptor<any>) {
+    const originalGet = descriptor.get;
+    const originalSet = descriptor.set;
+    const returnedValues: WeakMap<object, any> = new WeakMap();
+  
+    if (originalGet !== undefined) {
+        descriptor.get = function(...args: any[]) {
+            let val;
+            if (returnedValues.has(this)) {
+                val = returnedValues.get(this);
+            } else {
+                val = originalGet.apply(this, args);
+                returnedValues.set(this, val);
+            }
+            return val;
+        };
+    }
+  
+    if (originalSet !== undefined) {
+        descriptor.set = function(...args: any[]) {
+            returnedValues.delete(this);
+            return originalSet.apply(this, args);
+        };
+    }
+}
+  
+export function Memoize<T extends object, K extends keyof T>(_target: T, _propertyName: K, descriptor: TypedPropertyDescriptor<T[K]>) {
+    if (descriptor.value !== undefined) {
+        memoizeMethod(descriptor);
+    } else if (descriptor.get !== undefined) {
+        memoizeGetAccessor(descriptor);
+    } else {
+        throw new Error("Only methods or getters can be decorated with Memoize.");
+    }
+}
+
+export function timeFunction(fn: Function, ...args: any[]): number {
+    const t = performance.now();
+    fn(...args);
+    return performance.now() - t;
+}
+
+export function benchmark(iter = 100, fn: Function, ...args: any[]) {
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    
+    for (let i = 0; i < iter; i++) {
+        const t = timeFunction(fn, ...args);
+        min = Math.min(min, t);
+        max = Math.max(max, t);
+        sum += t;
+    }
+
+    const avg = sum / iter;
+
+    console.table([{
+        name: fn.name,
+        iter, min, max, avg
+    }]);
+}
