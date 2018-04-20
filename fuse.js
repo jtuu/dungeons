@@ -29,15 +29,6 @@ task("default", async () => {
         fuse.bundle(baseName)
             .instructions(`>${fileName}`)
             .watch();
-
-        watch(`${outputDir}/*.js`)
-            .file("*", file => {
-                fs.writeFile(`${outputDir}/${baseName}.html`, makeWithTemplate(outputTemplate, `<script src="${file.name}"></script>`), err => {
-                    if (err) {
-                        console.error(err);
-                    }
-                });
-            }).exec();
     });
 
     listingMarkup += "</ul>";
@@ -47,6 +38,16 @@ task("default", async () => {
             console.error(err);
         }
     })
+
+    watch(`${outputDir}/*.js`)
+        .file("*", file => {
+            const {name: baseName} = path.parse(file.name);
+            fs.writeFile(`${outputDir}/${baseName}.html`, makeWithTemplate(outputTemplate, `<script src="${file.name}"></script>`), err => {
+                if (err) {
+                    console.error(err);
+                }
+            });
+        }).exec();
 
     fuse.run();
 });
