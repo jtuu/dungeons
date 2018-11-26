@@ -147,3 +147,22 @@ export function benchmark(iter = 100, fn: Function, ...args: any[]) {
         iter, min, max, avg
     }]);
 }
+
+export function assertNotNull<T>(thing: T | null): T {
+    if (thing === null) {
+        throw new Error("Assert failed: is null");
+    }
+    return thing;
+}
+
+export function Bind<T extends Function>(_target: object, propName: string | symbol, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T> {
+    return {
+        get(this: T): T {
+            const bound = descriptor.value!.bind(this);
+            Object.defineProperty(this, propName, Object.assign({}, descriptor, {
+                value: bound
+            }));
+            return bound;
+        }
+    };
+}

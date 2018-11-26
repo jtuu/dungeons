@@ -5,7 +5,7 @@ const { watch, task } = require("fuse-box/sparky");
 
 const inputDir = "src";
 const outputDir = "dist";
-const mainFiles = ["tetris_dungeon.ts"];
+const mainFiles = ["tetris_dungeon.ts", "cells.ts"];
 const outputTemplate = fs.readFileSync(`${inputDir}/template.html`, "utf8");
 
 const fuse = FuseBox.init({

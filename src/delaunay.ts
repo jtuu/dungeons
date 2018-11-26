@@ -39,7 +39,7 @@ class DelaunayTriangulator {
     public triangles: Uint32Array;
     private halfEdges: Int32Array;
     private trianglesLength = 0;
-    private hull: Node;
+    public hull: Node;
 
     constructor(
         private points: Point[]
