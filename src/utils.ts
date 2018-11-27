@@ -166,3 +166,7 @@ export function Bind<T extends Function>(_target: object, propName: string | sym
         }
     };
 }
+
+export function enumValues<T>(e: T): Array<T[keyof T]> {
+    return Object.values(e).filter(v => !isNaN(v));
+}

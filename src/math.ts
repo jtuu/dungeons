@@ -53,3 +53,7 @@ export function segmentsCross1(a0: Point, a1: Point, b0: Point, b1: Point): bool
 
     return true;
 }
+
+export function linearScale(n: number, fromMin: number, fromMax: number, toMin: number, toMax: number) {
+    return ((toMax - toMin) * (n - fromMin) / (fromMax - fromMin)) + toMin;
+}
