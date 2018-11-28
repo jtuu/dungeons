@@ -1,8 +1,9 @@
 import { Black, Palette, White } from "./color";
+import { angleBetween, Vec2 } from "./geometry";
 import { linearScale } from "./math";
 import { MersenneTwister } from "./mt";
 import { StrictMap } from "./StrictMap";
-import { assertNotNull, enumValues } from "./utils";
+import { assertNotNull, enumValues, floatEquals, range } from "./utils";
 
 const TILE_SZ = 4;
 
@@ -14,7 +15,20 @@ enum CellState {
     MAX = Alive
 }
 
-class Rectangle {
+abstract class Shape {
+    constructor(
+        protected readonly system: CellAutomaton
+    ) {}
+
+    public abstract fill(value: CellState): void;
+    public abstract outline(value: CellState): void;
+    public abstract clone(): Shape;
+    public clear() {
+        this.fill(CellState.Dead);
+    }
+}
+
+class Rectangle extends Shape {
     public readonly width: number;
     public readonly height: number;
     public readonly left: number;
@@ -24,12 +38,13 @@ class Rectangle {
     public readonly startIndex: number;
 
     constructor(
-        private readonly system: CellAutomaton,
+        system: CellAutomaton,
         public readonly x: number,
         public readonly y: number,
         width: number,
         height: number
     ) {
+        super(system);
         const w = this.width = Math.max(1, width);
         const h = this.height = Math.max(1, height);
         this.left = x;
@@ -53,10 +68,6 @@ class Rectangle {
                 this.system.grid.copyWithin(i, first, rowEnd);
             }
         }
-    }
-
-    public clear() {
-        this.fill(CellState.Dead);
     }
 
     public outline(value: CellState) {
@@ -127,7 +138,179 @@ class RectangleFactory {
     }
 }
 
-type Vec2 = [number, number];
+class Polygon extends Shape {
+    public readonly vertices: Array<Vec2>;
+
+    constructor(
+        system: CellAutomaton,
+        vertices: Array<Vec2> = []
+    ) {
+        super(system);
+        this.vertices = vertices;
+    }
+
+    private static optimizeHelper(oldVerts: Array<Vec2>): Array<Vec2> {
+        const first = oldVerts[0];
+        const last = oldVerts[oldVerts.length - 1];
+        const newVerts = [last];
+        let numChanged = 0;
+        let prevAngle = angleBetween(last, first);
+        for (let i = 1; i < oldVerts.length; i++) {
+            const a = oldVerts[i - 1];
+            const b = oldVerts[i];
+            const curAngle = angleBetween(a, b);
+            if (floatEquals(curAngle, prevAngle)) {
+                numChanged++;
+            } else {
+                newVerts.push(a);
+            }
+            prevAngle = curAngle;
+        }
+        if (numChanged > 0) {
+            return Polygon.optimizeHelper(newVerts);
+        } else {
+            return newVerts;
+        }
+    }
+    
+    public optimize() {
+        const verts = this.vertices.slice();
+        this.vertices.length = 0;
+        this.vertices.push(...Polygon.optimizeHelper(verts));
+    }
+
+    public getBoundingBox(): Rectangle {
+        let top: number = Infinity,
+            bottom: number = -Infinity,
+            left: number = Infinity,
+            right: number = -Infinity;
+        for (const [x, y] of this.vertices) {
+            top = Math.min(top, y);
+            bottom = Math.max(bottom, y);
+            left = Math.min(left, x);
+            right = Math.max(right, x);
+        }
+        return new Rectangle(
+            this.system,
+            left,
+            top,
+            right - left,
+            bottom - top
+        );
+    }
+    
+    public fill(value: CellState) {
+        const bb = this.getBoundingBox();
+        const nodeX: Array<number> = [];
+        for (let pxy = bb.y; pxy < bb.bottom; pxy++) {
+            let j = this.vertices.length - 1;
+            for (let i = 0; i < this.vertices.length; i++) {
+               const [xi, yi] = this.vertices[i];
+               const [xj, yj] = this.vertices[j];
+               if (yi < pxy && yj >= pxy || yj < pxy && yi >= pxy) {
+                   nodeX.push(xi + (pxy - yi) / (yj - yi) * (xj - xi));
+                }
+                j = i;
+            }
+            nodeX.sort((a, b) => a - b);
+            for (let i = 0; i < nodeX.length; i += 2) {
+                if (nodeX[i] >= bb.right) { break; }
+                if (nodeX[i + 1] > bb.left) {
+                    if (nodeX[i] < bb.left) {
+                        nodeX[i] = bb.left;
+                    }
+                    if (nodeX[i + 1] > bb.right) {
+                        nodeX[i + 1] = bb.right;
+                    }
+                    for (let pxx = nodeX[i]; pxx < nodeX[i + 1]; pxx++) {
+                        this.system.grid[pxy * this.system.width + pxx] = value;
+                    }
+                }
+            }
+        }
+    }
+
+    private static rasterizeHelperLow(p0: Vec2, p1: Vec2, rasterized: Array<Vec2>) {
+        const dx = p1[0] - p0[0];
+        let dy = p1[1] - p0[1];
+        let yi = 1;
+        
+        if (dy < 0) {
+            yi = -1;
+            dy = -dy;
+        }
+        
+        let D = 2 * dy - dx;
+        let y = p0[1];
+        for (const x of range(p0[0], p1[0])) {
+            rasterized.push([x, y]);
+            if (D > 0) {
+                y += yi;
+                D -= 2 * dx;
+            }
+            D += 2 * dy;
+        }
+    }
+    
+    private static rasterizeHelperHigh(p0: Vec2, p1: Vec2, rasterized: Array<Vec2>) {
+        let dx = p1[0] - p0[0];
+        const dy = p1[1] - p0[1];
+        let xi = 1;
+        
+        if (dx < 0) {
+            xi = -1;
+            dx = -dx;
+        }
+        
+        let D = 2 * dx - dy;
+        let x = p0[0];
+        for (const y of range(p0[1], p1[1])) {
+            rasterized.push([x, y]);
+            if (D > 0) {
+                x += xi;
+                D -= 2 * dy;
+            }
+            D += 2 * dx;
+        }
+    }
+    
+    public getOutline(): Array<Vec2> {
+        const rasterized: Array<Vec2> = [];
+        let p0 = this.vertices[this.vertices.length - 1];
+        for (let i = 0; i < this.vertices.length; i++) {
+            const p1 = this.vertices[i];
+            if (Math.abs(p1[1] - p0[1]) < Math.abs(p1[0] - p0[0])) {
+                if (p0[0] > p1[0]) {
+                    Polygon.rasterizeHelperLow(p1, p0, rasterized);
+                } else {
+                    Polygon.rasterizeHelperLow(p0, p1, rasterized);
+                }
+            } else {
+                if (p0[1] > p1[1]) {
+                    Polygon.rasterizeHelperHigh(p1, p0, rasterized);
+                } else {
+                    Polygon.rasterizeHelperHigh(p0, p1, rasterized);
+                }
+            }
+            p0 = p1;
+        }
+        return rasterized;
+    }
+
+    public outline(value: CellState) {
+        const outline = this.getOutline();
+        for (const [x, y] of this.vertices) {
+            this.system.grid[y * this.system.width + x] = value;
+        }
+        for (const [x, y] of outline) {
+            this.system.grid[y * this.system.width + x] = value;
+        }
+    }
+
+    public clone(): Polygon {
+        return new Polygon(this.system, this.vertices.slice());
+    }
+}
 
 const  N: Vec2 = [ 0, -1];
 const NE: Vec2 = [ 1, -1];
@@ -180,6 +363,7 @@ class CellAutomaton {
     public readonly rectangle: RectangleFactory = new RectangleFactory(this);
     public ctx?: CanvasRenderingContext2D;
     public palette?: Palette;
+    public readonly bounds: Rectangle;
 
     constructor(
         public readonly width: number,
@@ -197,6 +381,7 @@ class CellAutomaton {
         this.writeGrid = this.grid2;
         this.centerX = Math.floor(width / 2);
         this.centerY = Math.floor(height / 2);
+        this.bounds = new Rectangle(this, 1, 1, width - 1, height - 1);
     }
 
     public get grid(): Grid {
@@ -205,6 +390,17 @@ class CellAutomaton {
 
     public withinBounds(x: number, y: number): boolean {
         return x >= 0 && x < this.width && y >= 0 && y < this.height;
+    }
+
+    public clear() {
+        this.readGrid.fill(CellState.Dead);
+    }
+
+    public setIndices(indices: Array<number>, value: CellState) {
+        for (const i of indices) {
+            this.writeGrid[i] = value;
+        }
+        this.swapGrids();
     }
 
     protected *neighbors(grid: Grid, cx: number, cy: number, offsets: Array<Vec2>): IterableIterator<Cell> {
@@ -416,6 +612,168 @@ class CellAutomaton {
         }
         return null;
     }
+
+    public getBoundingBox(exclude: CellState): Rectangle {
+        const w = this.width;
+        const h = this.height;
+        const data = this.readGrid;
+        const len = data.length;
+        let top: number = 0,
+            bottom: number = w * (h - 1),
+            left: number = 0,
+            right: number = w - 1;
+        for (let i = 0; i < len; i++) {
+            if (data[i] !== exclude) {
+                top = i;
+                break;
+            }
+        }
+        for (let i = len - 1; i >= 0; i--) {
+            if (data[i] !== exclude) {
+                bottom = i;
+                break;
+            }
+        }
+        left_loop:
+        for (let x = 0; x < w; x++) {
+            for (let i = x; i < len; i += w) {
+                if (data[i] !== exclude) {
+                    left = i;
+                    break left_loop;
+                }
+            }
+        }
+        right_loop:
+        for (let x = w - 1; x >= 0; x--) {
+            for (let i = x; i < len; i += w) {
+                if (data[i] !== exclude) {
+                    right = i;
+                    break right_loop;
+                }
+            }
+        }
+        const x1 = left % w;
+        const y1 = Math.floor(top / w);
+        const x2 = right % w;
+        const y2 = Math.floor(bottom / w);
+        return new Rectangle(
+            this,
+            x1,
+            y1,
+            x2 - x1 + 1,
+            y2 - y1 + 1
+        );
+    }
+
+    public getOutline(exclude: CellState, bounds: Rectangle = this.bounds): Array<number> {
+        const outline: Array<number> = [];
+        const data = this.readGrid;
+        const width = this.width;
+        const first = bounds.startIndex;
+        const x2 = first + bounds.width + 1;
+        const offsetRight = bounds.width;
+        const offsetBottom = width * bounds.height;
+        const lastRow = first + width * bounds.height;
+        const stack: Array<number> = [];
+        const visited: Set<number> = new Set();
+        for (let top = first; top < x2; top++) {
+            const bottom = top + offsetBottom;
+            visited.add(top);
+            visited.add(bottom);
+            if (data[top] === exclude) {
+                stack.push(top);
+            } else {
+                outline.push(top);
+            }
+            if (data[bottom] === exclude) {
+                stack.push(bottom);
+            } else {
+                outline.push(bottom);
+            }
+        }
+        for (let left = first + width; left < lastRow; left += width) {
+            const right = left + offsetRight;
+            visited.add(left);
+            visited.add(right);
+            if (data[left] === exclude) {
+                stack.push(left);
+            } else {
+                outline.push(left);
+            }
+            if (data[right] === exclude) {
+                stack.push(right);
+            } else {
+                outline.push(right);
+            }
+        }
+        while (stack.length > 0) {
+            const i = stack.pop()!;
+            const n = i - width;
+            const e = i + 1;
+            const s = i + width;
+            const w = i - 1;
+            const dirs = [n, e, s, w];
+            for (const dir of dirs) {
+                if (!visited.has(dir)) {
+                    const x = dir % width;
+                    const y = Math.floor(dir / width);
+                    if (x >= bounds.x && x < bounds.right && y >= bounds.y && y < bounds.bottom) {
+                        visited.add(dir);
+                        if (data[dir] === exclude) {
+                            stack.push(dir);
+                        } else {
+                            outline.push(dir);
+                        }
+                    }
+                }
+            }
+        }
+        const start = outline[0];
+        const sorted: Array<number> = [start];
+        visited.delete(start);
+        let cur = start;
+        sort_loop:
+        while (outline.length > 0) {
+            const n = cur - width;
+            const ne = n + 1;
+            const e = cur + 1;
+            const se = e + width;
+            const s = cur + width;
+            const sw = s - 1;
+            const w = cur - 1;
+            const nw = w - width;
+            const dirs = [n, ne, e, se, s, sw, w, nw];
+            for (const dir of dirs) {
+                let idx;
+                if (visited.has(dir) && (idx = outline.indexOf(dir)) > -1) {
+                    sorted.push(dir);
+                    visited.delete(dir);
+                    outline.splice(idx, 1);
+                    cur = dir;
+                    continue sort_loop;
+                }
+            }
+            for (const dir of dirs) {
+                if (dir === start) {
+                    sorted.push(dir);
+                    break sort_loop;
+                }
+            }
+        }
+        return sorted;
+    }
+
+    public polygonize(exclude: CellState, bounds: Rectangle = this.getBoundingBox(exclude)): Polygon {
+        const poly = new Polygon(this);
+        const outline = this.getOutline(exclude, bounds);
+        for (const i of outline) {
+            const x = i % this.width;
+            const y = Math.floor(i / this.width);
+            poly.vertices.push([x, y]);
+        }
+        poly.optimize();
+        return poly;
+    }
 }
 
 type Command = () => void | Command;
@@ -449,7 +807,7 @@ function clickCommands(commands: Array<Command>) {
 const container = document.body.appendChild(document.createElement("div"));
 container.style.display = "inline-block";
 function main() {
-    const numPerSide = 4;
+    const numPerSide = 1;
     const palette = [Black, White, White];
     const ca = new CellAutomaton(50 * numPerSide, 50 * numPerSide);
     const canvas = container.appendChild(document.createElement("canvas"));
@@ -485,11 +843,25 @@ function main() {
             }
             draw();
         },
-        ...Array(4).fill(() => {
+        ...Array(1).fill(() => {
             ca.useRule(RuleKind.VichniacVote);
-            ca.update(1);
+            ca.update(10);
             draw();
         }),
+        /*
+        () => {
+            const outline = ca.getOutline(CellState.Dead, ca.getBoundingBox(CellState.Dead));
+            ca.clear();
+            ca.setIndices(outline, CellState.Alive);
+            draw();
+        },
+        */
+        () => {
+            const poly = ca.polygonize(CellState.Dead);
+            ca.clear();
+            poly.outline(CellState.Alive);
+            draw();
+        },
         () => {
             const clone = ca.clone();
             ca.useRule(RuleKind.Grow);
@@ -519,7 +891,7 @@ function main() {
         }
     ];
 
-    runCommands(commands);
+    clickCommands(commands);
 }
 
 main();

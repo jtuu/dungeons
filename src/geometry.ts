@@ -1,5 +1,5 @@
 import { distance, lerp, segmentsCross } from "./math";
-import { Color, drawPoints, neighborhoodOffsets4, range, Memoize } from "./utils";
+import { Color, drawPoints, Memoize, neighborhoodOffsets4, range } from "./utils";
 
 export class Point {
     constructor(public readonly x: number, public readonly y: number) {}
@@ -419,4 +419,10 @@ export class Rectangle {
         
         ctx.putImageData(imgData, 0, 0);
     }
+}
+
+export type Vec2 = [number, number];
+
+export function angleBetween(a: Vec2, b: Vec2) {
+    return Math.atan2(b[1] - a[1], b[0] - a[0]);
 }

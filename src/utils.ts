@@ -22,7 +22,7 @@ export const Cyan: Color = [0, 255, 255, 255];
 export const Magenta: Color = [255, 0, 255, 255];
 export const Yellow: Color = [255, 255, 0, 255];
 
-export function swap(arr: TypedArray, i: number, j: number) {
+export function swap(arr: Mutable<ArrayLike<any>>, i: number, j: number) {
     const temp = arr[i];
     arr[i] = arr[j];
     arr[j] = temp;
@@ -169,4 +169,8 @@ export function Bind<T extends Function>(_target: object, propName: string | sym
 
 export function enumValues<T>(e: T): Array<T[keyof T]> {
     return Object.values(e).filter(v => !isNaN(v));
+}
+
+export function floatEquals(a: number, b: number) {
+    return Math.abs(a - b) < Number.EPSILON;
 }
