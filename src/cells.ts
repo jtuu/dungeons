@@ -1,315 +1,21 @@
 import { Black, Palette, White } from "./color";
-import { angleBetween, Vec2 } from "./geometry";
+import { CommandRunner } from "./CommandRunner";
+import { Vec2 } from "./geometry";
 import { linearScale } from "./math";
 import { MersenneTwister } from "./mt";
+import { Polygon } from "./Polygon";
+import { Rectangle, RectangleFactory } from "./Rectangle";
 import { StrictMap } from "./StrictMap";
-import { assertNotNull, enumValues, floatEquals, range } from "./utils";
+import { assertNotNull, enumValues } from "./utils";
 
 const TILE_SZ = 4;
 
-enum CellState {
+export enum CellState {
     Dead,
     MIN = Dead,
     Dying,
     Alive,
     MAX = Alive
-}
-
-abstract class Shape {
-    constructor(
-        protected readonly system: CellAutomaton
-    ) {}
-
-    public abstract fill(value: CellState): void;
-    public abstract outline(value: CellState): void;
-    public abstract clone(): Shape;
-    public clear() {
-        this.fill(CellState.Dead);
-    }
-}
-
-class Rectangle extends Shape {
-    public readonly width: number;
-    public readonly height: number;
-    public readonly left: number;
-    public readonly right: number;
-    public readonly top: number;
-    public readonly bottom: number;
-    public readonly startIndex: number;
-
-    constructor(
-        system: CellAutomaton,
-        public readonly x: number,
-        public readonly y: number,
-        width: number,
-        height: number
-    ) {
-        super(system);
-        const w = this.width = Math.max(1, width);
-        const h = this.height = Math.max(1, height);
-        this.left = x;
-        this.right = x + w;
-        this.top = y;
-        this.bottom = y + h;
-        this.startIndex = y * this.system.width + x;
-    }
-    
-    public fill(value: CellState) {
-        const first = this.startIndex;
-        const rowEnd = first + this.width;
-        for (let i = first; i < rowEnd; i++) {
-            this.system.grid[i] = value;
-        }
-        if (this.height > 1) {
-            const stride = this.system.width;
-            const second = this.startIndex + stride;
-            const colEnd = this.startIndex + stride * this.height;
-            for (let i = second; i < colEnd; i += stride) {
-                this.system.grid.copyWithin(i, first, rowEnd);
-            }
-        }
-    }
-
-    public outline(value: CellState) {
-        const first = this.startIndex;
-        const rowEnd = first + this.width;
-        for (let i = first; i < rowEnd; i++) {
-            this.system.grid[i] = value;
-        }
-        const stride = this.system.width;
-        if (this.height > 1) {
-            const lastStart = this.startIndex + stride * (this.height - 1);
-            this.system.grid.copyWithin(lastStart, first, rowEnd);
-        }
-
-        const colEnd = this.y + this.height - 1;
-        const rightOffset = this.x + this.width - 1;
-        for (let y = this.y + 1; y < colEnd; y++) {
-            const row = y * stride;
-            this.system.grid[row + this.x] = value;
-            this.system.grid[row + rightOffset] = value;
-        }
-    }
-
-    public grow(amount: number): Rectangle {
-        const amount2 = amount * 2;
-        return new Rectangle(
-            this.system,
-            this.x - amount,
-            this.y - amount,
-            this.width + amount2,
-            this.height + amount2
-        );
-    }
-
-    public shrink(amount: number): Rectangle {
-        const amount2 = amount * 2;
-        return new Rectangle(
-            this.system,
-            this.x + amount,
-            this.y + amount,
-            this.width - amount2,
-            this.height - amount2
-        );
-    }
-
-    public clone(): Rectangle {
-        return new Rectangle(this.system, this.x, this.y, this.width, this.height);
-    }
-}
-
-class RectangleFactory {
-    constructor(private readonly system: CellAutomaton) {}
-
-    public at(x: number, y: number, width: number, height: number): Rectangle {
-        return new Rectangle(this.system, x, y, width, height);
-    }
-
-    public around(cx: number, cy: number, width: number, height: number): Rectangle {
-        const x = cx - Math.floor(width / 2);
-        const y = cy - Math.floor(height / 2);
-        return new Rectangle(this.system, x, y, width, height);
-    }
-
-    public fill(x: number, y: number, w: number, h: number, value: CellState): Rectangle {
-        const rect = new Rectangle(this.system, x, y, w, h);
-        rect.fill(value);
-        return rect;
-    }
-}
-
-class Polygon extends Shape {
-    public readonly vertices: Array<Vec2>;
-
-    constructor(
-        system: CellAutomaton,
-        vertices: Array<Vec2> = []
-    ) {
-        super(system);
-        this.vertices = vertices;
-    }
-
-    private static optimizeHelper(oldVerts: Array<Vec2>): Array<Vec2> {
-        const first = oldVerts[0];
-        const last = oldVerts[oldVerts.length - 1];
-        const newVerts = [last];
-        let numChanged = 0;
-        let prevAngle = angleBetween(last, first);
-        for (let i = 1; i < oldVerts.length; i++) {
-            const a = oldVerts[i - 1];
-            const b = oldVerts[i];
-            const curAngle = angleBetween(a, b);
-            if (floatEquals(curAngle, prevAngle)) {
-                numChanged++;
-            } else {
-                newVerts.push(a);
-            }
-            prevAngle = curAngle;
-        }
-        if (numChanged > 0) {
-            return Polygon.optimizeHelper(newVerts);
-        } else {
-            return newVerts;
-        }
-    }
-    
-    public optimize() {
-        const verts = this.vertices.slice();
-        this.vertices.length = 0;
-        this.vertices.push(...Polygon.optimizeHelper(verts));
-    }
-
-    public getBoundingBox(): Rectangle {
-        let top: number = Infinity,
-            bottom: number = -Infinity,
-            left: number = Infinity,
-            right: number = -Infinity;
-        for (const [x, y] of this.vertices) {
-            top = Math.min(top, y);
-            bottom = Math.max(bottom, y);
-            left = Math.min(left, x);
-            right = Math.max(right, x);
-        }
-        return new Rectangle(
-            this.system,
-            left,
-            top,
-            right - left,
-            bottom - top
-        );
-    }
-    
-    public fill(value: CellState) {
-        const bb = this.getBoundingBox();
-        const nodeX: Array<number> = [];
-        for (let pxy = bb.y; pxy < bb.bottom; pxy++) {
-            let j = this.vertices.length - 1;
-            for (let i = 0; i < this.vertices.length; i++) {
-               const [xi, yi] = this.vertices[i];
-               const [xj, yj] = this.vertices[j];
-               if (yi < pxy && yj >= pxy || yj < pxy && yi >= pxy) {
-                   nodeX.push(xi + (pxy - yi) / (yj - yi) * (xj - xi));
-                }
-                j = i;
-            }
-            nodeX.sort((a, b) => a - b);
-            for (let i = 0; i < nodeX.length; i += 2) {
-                if (nodeX[i] >= bb.right) { break; }
-                if (nodeX[i + 1] > bb.left) {
-                    if (nodeX[i] < bb.left) {
-                        nodeX[i] = bb.left;
-                    }
-                    if (nodeX[i + 1] > bb.right) {
-                        nodeX[i + 1] = bb.right;
-                    }
-                    for (let pxx = nodeX[i]; pxx < nodeX[i + 1]; pxx++) {
-                        this.system.grid[pxy * this.system.width + pxx] = value;
-                    }
-                }
-            }
-        }
-    }
-
-    private static rasterizeHelperLow(p0: Vec2, p1: Vec2, rasterized: Array<Vec2>) {
-        const dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let yi = 1;
-        
-        if (dy < 0) {
-            yi = -1;
-            dy = -dy;
-        }
-        
-        let D = 2 * dy - dx;
-        let y = p0[1];
-        for (const x of range(p0[0], p1[0])) {
-            rasterized.push([x, y]);
-            if (D > 0) {
-                y += yi;
-                D -= 2 * dx;
-            }
-            D += 2 * dy;
-        }
-    }
-    
-    private static rasterizeHelperHigh(p0: Vec2, p1: Vec2, rasterized: Array<Vec2>) {
-        let dx = p1[0] - p0[0];
-        const dy = p1[1] - p0[1];
-        let xi = 1;
-        
-        if (dx < 0) {
-            xi = -1;
-            dx = -dx;
-        }
-        
-        let D = 2 * dx - dy;
-        let x = p0[0];
-        for (const y of range(p0[1], p1[1])) {
-            rasterized.push([x, y]);
-            if (D > 0) {
-                x += xi;
-                D -= 2 * dy;
-            }
-            D += 2 * dx;
-        }
-    }
-    
-    public getOutline(): Array<Vec2> {
-        const rasterized: Array<Vec2> = [];
-        let p0 = this.vertices[this.vertices.length - 1];
-        for (let i = 0; i < this.vertices.length; i++) {
-            const p1 = this.vertices[i];
-            if (Math.abs(p1[1] - p0[1]) < Math.abs(p1[0] - p0[0])) {
-                if (p0[0] > p1[0]) {
-                    Polygon.rasterizeHelperLow(p1, p0, rasterized);
-                } else {
-                    Polygon.rasterizeHelperLow(p0, p1, rasterized);
-                }
-            } else {
-                if (p0[1] > p1[1]) {
-                    Polygon.rasterizeHelperHigh(p1, p0, rasterized);
-                } else {
-                    Polygon.rasterizeHelperHigh(p0, p1, rasterized);
-                }
-            }
-            p0 = p1;
-        }
-        return rasterized;
-    }
-
-    public outline(value: CellState) {
-        const outline = this.getOutline();
-        for (const [x, y] of this.vertices) {
-            this.system.grid[y * this.system.width + x] = value;
-        }
-        for (const [x, y] of outline) {
-            this.system.grid[y * this.system.width + x] = value;
-        }
-    }
-
-    public clone(): Polygon {
-        return new Polygon(this.system, this.vertices.slice());
-    }
 }
 
 const  N: Vec2 = [ 0, -1];
@@ -335,7 +41,12 @@ enum RuleKind {
 
 type Cell = [/*x*/number, /*y*/number, CellState];
 
-class CellAutomaton {
+enum DrawStyle {
+    Fill,
+    Outline
+}
+
+export class CellAutomaton {
     protected readonly ruleMap: StrictMap<RuleKind, Rule> = new StrictMap([
         [RuleKind.VichniacVote, this.ruleVichniacVote],
         [RuleKind.Grow, this.ruleGrow],
@@ -354,22 +65,27 @@ class CellAutomaton {
     ];
     public readonly rng: MersenneTwister = new MersenneTwister();
     public rule: Rule;
-    protected readonly grid1: Grid;
-    protected readonly grid2: Grid;
+    protected width_: number;
+    protected height_: number;
+    protected grid1: Grid;
+    protected grid2: Grid;
     protected readGrid: Grid;
     protected writeGrid: Grid;
-    public readonly centerX: number;
-    public readonly centerY: number;
+    protected centerX_: number;
+    protected centerY_: number;
     public readonly rectangle: RectangleFactory = new RectangleFactory(this);
     public ctx?: CanvasRenderingContext2D;
     public palette?: Palette;
-    public readonly bounds: Rectangle;
+    protected bounds_: Rectangle;
+    protected storage: StrictMap<string, CellAutomaton> = new StrictMap();
 
     constructor(
-        public readonly width: number,
-        public readonly height: number,
+        width: number,
+        height: number,
         grid?: Grid
     ) {
+        this.width_ = width;
+        this.height_ = height;
         this.rule = this.ruleVichniacVote;
         if (grid === undefined) {
             this.grid1 = new Grid(width * height);
@@ -379,9 +95,29 @@ class CellAutomaton {
         this.grid2 = new Grid(width * height);
         this.readGrid = this.grid1;
         this.writeGrid = this.grid2;
-        this.centerX = Math.floor(width / 2);
-        this.centerY = Math.floor(height / 2);
-        this.bounds = new Rectangle(this, 1, 1, width - 1, height - 1);
+        this.centerX_ = Math.floor(width / 2);
+        this.centerY_ = Math.floor(height / 2);
+        this.bounds_ = new Rectangle(this, 0, 0, width, height);
+    }
+
+    public get width(): number {
+        return this.width_;
+    }
+
+    public get height(): number {
+        return this.height_;
+    }
+
+    public get centerX(): number {
+        return this.centerX_;
+    }
+
+    public get centerY(): number {
+        return this.centerY_;
+    }
+
+    public get bounds(): Rectangle {
+        return this.bounds_;
     }
 
     public get grid(): Grid {
@@ -557,9 +293,38 @@ class CellAutomaton {
         return new CellAutomaton(this.width, this.height, newGrid);
     }
 
-    public subtract(subtrahend: CellAutomaton) {
-        for (let i = 0; i < this.writeGrid.length; i++) {
-            this.writeGrid[i] = Math.max(this.readGrid[i] - subtrahend.grid[i], CellState.MIN);
+    public subtract(subtrahend: CellAutomaton, ox: number = 0, oy: number = 0) {
+        const ex = ox + subtrahend.width;
+        const ey = oy + subtrahend.height;
+        for (let y = oy, i = 0; y < ey; y++) {
+            for (let x = ox; x < ex; x++, i++) {
+                const j = y * this.width + x;
+                this.writeGrid[j] = Math.max(this.readGrid[j] - subtrahend.grid[i], CellState.MIN);
+            }
+        }
+        this.swapGrids();
+    }
+
+    public add(addend: CellAutomaton, ox: number = 0, oy: number = 0) {
+        const ex = ox + addend.width;
+        const ey = oy + addend.height;
+        for (let y = oy, i = 0; y < ey; y++) {
+            for (let x = ox; x < ex; x++, i++) {
+                const j = y * this.width + x;
+                this.writeGrid[j] = Math.min(this.readGrid[j] + addend.grid[i], CellState.MAX);
+            }
+        }
+        this.swapGrids();
+    }
+
+    public xor(other: CellAutomaton, ox: number = 0, oy: number = 0) {
+        const ex = ox + other.width;
+        const ey = oy + other.height;
+        for (let y = oy, i = 0; y < ey; y++) {
+            for (let x = ox; x < ex; x++, i++) {
+                const j = y * this.width + x;
+                this.writeGrid[j] = Math.min(this.readGrid[j] ^ other.grid[i], CellState.MAX);
+            }
         }
         this.swapGrids();
     }
@@ -774,34 +539,65 @@ class CellAutomaton {
         poly.optimize();
         return poly;
     }
-}
 
-type Command = () => void | Command;
+    public store(name: string) {
+        this.storage.set(name, this.clone());
+    }
 
-function* processCommands(commands: Array<Command>): IterableIterator<void> {
-    let cmd;
-    while ((cmd = commands.shift()) !== undefined) {
-        const subcmd = cmd();
-        yield;
-        if (typeof subcmd === "function") {
-            commands.unshift(subcmd);
+    public load(name: string): CellAutomaton {
+        return this.storage.get(name);
+    }
+
+    public margin(marginSize: number) {
+        const clone = this.clone();
+        const m2 = marginSize * 2;
+        this.width_ += m2;
+        this.height_ += m2;
+        const size = this.width_ * this.height_;
+        this.grid1 = new Grid(size);
+        this.grid2 = new Grid(size);
+        this.readGrid = this.grid1;
+        this.writeGrid = this.grid2;
+        this.centerX_ = Math.floor(this.width_ / 2);
+        this.centerY_ = Math.floor(this.height_ / 2);
+        this.bounds_ = new Rectangle(this, 0, 0, this.width_, this.height_);
+        this.add(clone, marginSize, marginSize);
+    }
+
+    public async partition(minArea: number, sizeVar: number, placeFreq: number, margin: number, style: DrawStyle, value: CellState) {
+        const stack: Array<Rectangle> = [this.bounds.shrink(1)];
+        while (stack.length > 0) {
+            const rect = stack.pop()!;
+            if (rect.area >= minArea) {
+                if (rect.width > rect.height) {
+                    const halfw = rect.width / 2;
+                    const variance = Math.floor(halfw * sizeVar);
+                    const splitw = Math.floor(halfw + (this.rng.genrand_int32() % (variance + 1)) - (variance / 2));
+                    const left = this.rectangle.at(rect.x, rect.y, splitw - margin, rect.height);
+                    const right = this.rectangle.at(rect.x + splitw, rect.y, rect.width - splitw, rect.height);
+                    stack.push(left, right);
+                } else {
+                    const halfh = rect.height / 2;
+                    const variance = Math.floor(halfh * sizeVar);
+                    const splith = Math.floor(halfh + (this.rng.genrand_int32() % (variance + 1)) - (variance / 2)) ;
+                    const top = this.rectangle.at(rect.x, rect.y, rect.width, splith - margin);
+                    const bottom = this.rectangle.at(rect.x, rect.y + splith, rect.width, rect.height - splith);
+                    stack.push(top, bottom);
+                }
+            } else {
+                if (this.rng.random() < placeFreq) {
+                    switch (style) {
+                    case DrawStyle.Fill:
+                        rect.fill(value);
+                        break;
+                    case DrawStyle.Outline:
+                        rect.outline(value);
+                        break;
+                    }
+                }
+            }
         }
     }
-}
-
-function runCommands(commands: Array<Command>) {
-    const iter = processCommands(commands);
-    let cur;
-    do {
-        cur = iter.next();
-    } while (!cur.done);
-}
-
-function clickCommands(commands: Array<Command>) {
-    const iter = processCommands(commands);
-    window.addEventListener("click", () => {
-        iter.next();
-    });
 }
 
 const container = document.body.appendChild(document.createElement("div"));
@@ -818,80 +614,44 @@ function main() {
     ctx.scale(TILE_SZ, TILE_SZ);
     ca.bindParams(ctx, palette);
 
-    const draw = ca.draw.bind(ca);
-    const commands = [
+    const commands = new CommandRunner([
         () => {
-            const roomAreaSize = ca.width / numPerSide;
-            const roomAreaSizeHalf = roomAreaSize / 2;
-            for (let j = 0; j < numPerSide * numPerSide; j++) {
-                let ox = roomAreaSize * j + roomAreaSizeHalf;
-                let oy = Math.floor(j / numPerSide) * roomAreaSize + roomAreaSizeHalf;
-                for (let i = 0; i < 3; i++) {
-                    const dx = ca.rng.genrand_int32() % 10 - 5;
-                    const dy = ca.rng.genrand_int32() % 10 - 5;
-                    const x = ox + dx;
-                    const y = oy + dy;
-                    ox = x;
-                    oy = y;
-                    const w = ca.rng.genrand_int32() % (10 - Math.floor(Math.abs(dx / 2))) + 5;
-                    const h = ca.rng.genrand_int32() % (10 - Math.floor(Math.abs(dy / 2))) + 5;
-                    const rect = ca.rectangle.around(x, y, w, h);
-                    rect.fill(CellState.Alive);
-                    rect.shrink(2).outline(CellState.Dead);
-                    rect.grow(4).outline(CellState.Alive);
-                }
-            }
-            draw();
+            ca.partition(200, 0.1, 0.5, 3, DrawStyle.Fill, CellState.Alive);
+            ca.draw();
         },
-        ...Array(1).fill(() => {
+        () => {
+            ca.margin(50);
+            canvas.width = ca.width * TILE_SZ;
+            canvas.height = ca.height * TILE_SZ;
+            ctx.scale(TILE_SZ, TILE_SZ);
+            ca.draw();
+        },
+        ...Array(0).fill(() => {
             ca.useRule(RuleKind.VichniacVote);
-            ca.update(10);
-            draw();
+            ca.update(2);
+            ca.draw();
         }),
-        /*
         () => {
-            const outline = ca.getOutline(CellState.Dead, ca.getBoundingBox(CellState.Dead));
-            ca.clear();
-            ca.setIndices(outline, CellState.Alive);
-            draw();
-        },
-        */
-        () => {
-            const poly = ca.polygonize(CellState.Dead);
-            ca.clear();
-            poly.outline(CellState.Alive);
-            draw();
-        },
-        () => {
-            const clone = ca.clone();
+            ca.store("inside");
             ca.useRule(RuleKind.Grow);
             ca.update(1);
-            draw();
-            return () => {
-                ca.useRule(RuleKind.VichniacVote);
-                ca.update(1);
-                draw();
-                return () => {
-                    ca.quantize(2);
-                    clone.quantize(2);
-                    ca.subtract(clone);
-                    draw();
-                };
-            };
+            ca.draw();
         },
         () => {
-            ca.floodFill(0, 0, CellState.Alive).then(() => {
-                ca.draw();
-            });
+            ca.useRule(RuleKind.VichniacVote);
+            ca.update(2);
+            ca.draw();
         },
         () => {
-            ca.useRule(RuleKind.Invert);
-            ca.update(1);
-            draw();
+            const inside = ca.load("inside");
+            ca.quantize(2);
+            inside.quantize(2);
+            ca.subtract(inside);
+            ca.draw();
         }
-    ];
+    ]);
 
-    clickCommands(commands);
+    commands.interactive();
 }
 
 main();
