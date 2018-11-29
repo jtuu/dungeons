@@ -1,14 +1,14 @@
-import { Black, Palette, White } from "./color";
+import { Black, Palette, White, Red } from "./color";
 import { CommandRunner } from "./CommandRunner";
 import { Vec2 } from "./geometry";
 import { linearScale } from "./math";
 import { MersenneTwister } from "./mt";
-import { Polygon } from "./Polygon";
+import { Polygon, PolygonFactory } from "./Polygon";
 import { Rectangle, RectangleFactory } from "./Rectangle";
 import { StrictMap } from "./StrictMap";
 import { assertNotNull, enumValues } from "./utils";
 
-const TILE_SZ = 4;
+const TILE_SZ = 2;
 
 export enum CellState {
     Dead,
@@ -74,6 +74,7 @@ export class CellAutomaton {
     protected centerX_: number;
     protected centerY_: number;
     public readonly rectangle: RectangleFactory = new RectangleFactory(this);
+    public readonly polygon: PolygonFactory = new PolygonFactory(this);
     public ctx?: CanvasRenderingContext2D;
     public palette?: Palette;
     protected bounds_: Rectangle;
@@ -231,7 +232,7 @@ export class CellAutomaton {
         if (state !== CellState.Dead) {
             return CellState.Alive;
         }
-        for (const [, , n] of this.mooreNeighbors(this.readGrid, x, y)) {
+        for (const [, , n] of this.vonNeumannNeighbors(this.readGrid, x, y)) {
             if (n !== CellState.Dead) {
                 return CellState.Alive;
             }
@@ -248,8 +249,11 @@ export class CellAutomaton {
         return state;
     }
 
-    public useRule(kind: RuleKind) {
+    public useRule(kind: RuleKind, n: number = 0) {
         this.rule = this.ruleMap.get(kind);
+        if (n > 0) {
+            this.update(n);
+        }
     }
 
     public updateOnce() {
@@ -299,10 +303,9 @@ export class CellAutomaton {
         for (let y = oy, i = 0; y < ey; y++) {
             for (let x = ox; x < ex; x++, i++) {
                 const j = y * this.width + x;
-                this.writeGrid[j] = Math.max(this.readGrid[j] - subtrahend.grid[i], CellState.MIN);
+                this.readGrid[j] = Math.max(this.readGrid[j] - subtrahend.grid[i], CellState.MIN);
             }
         }
-        this.swapGrids();
     }
 
     public add(addend: CellAutomaton, ox: number = 0, oy: number = 0) {
@@ -311,10 +314,9 @@ export class CellAutomaton {
         for (let y = oy, i = 0; y < ey; y++) {
             for (let x = ox; x < ex; x++, i++) {
                 const j = y * this.width + x;
-                this.writeGrid[j] = Math.min(this.readGrid[j] + addend.grid[i], CellState.MAX);
+                this.readGrid[j] = Math.min(this.readGrid[j] + addend.grid[i], CellState.MAX);
             }
         }
-        this.swapGrids();
     }
 
     public xor(other: CellAutomaton, ox: number = 0, oy: number = 0) {
@@ -323,10 +325,9 @@ export class CellAutomaton {
         for (let y = oy, i = 0; y < ey; y++) {
             for (let x = ox; x < ex; x++, i++) {
                 const j = y * this.width + x;
-                this.writeGrid[j] = Math.min(this.readGrid[j] ^ other.grid[i], CellState.MAX);
+                this.readGrid[j] = Math.min(this.readGrid[j] ^ other.grid[i], CellState.MAX);
             }
         }
-        this.swapGrids();
     }
 
     public async floodFill(x0: number, y0: number, value: CellState, animate: boolean = false) {
@@ -564,7 +565,8 @@ export class CellAutomaton {
         this.add(clone, marginSize, marginSize);
     }
 
-    public async partition(minArea: number, sizeVar: number, placeFreq: number, margin: number, style: DrawStyle, value: CellState) {
+    public partition(minArea: number, minRatio: number, sizeVar: number, placeFreq: number, margin: number, style: DrawStyle, value: CellState): Array<Rectangle> {
+        const drawn: Array<Rectangle> = [];
         const stack: Array<Rectangle> = [this.bounds.shrink(1)];
         while (stack.length > 0) {
             const rect = stack.pop()!;
@@ -575,16 +577,24 @@ export class CellAutomaton {
                     const splitw = Math.floor(halfw + (this.rng.genrand_int32() % (variance + 1)) - (variance / 2));
                     const left = this.rectangle.at(rect.x, rect.y, splitw - margin, rect.height);
                     const right = this.rectangle.at(rect.x + splitw, rect.y, rect.width - splitw, rect.height);
-                    stack.push(left, right);
+                    if (this.rng.genrand_int32() % 2) {
+                        stack.push(left, right);
+                    } else {
+                        stack.push(right, left);
+                    }
                 } else {
                     const halfh = rect.height / 2;
                     const variance = Math.floor(halfh * sizeVar);
                     const splith = Math.floor(halfh + (this.rng.genrand_int32() % (variance + 1)) - (variance / 2)) ;
                     const top = this.rectangle.at(rect.x, rect.y, rect.width, splith - margin);
                     const bottom = this.rectangle.at(rect.x, rect.y + splith, rect.width, rect.height - splith);
-                    stack.push(top, bottom);
+                    if (this.rng.genrand_int32() % 2) {
+                        stack.push(top, bottom);
+                    } else {
+                        stack.push(bottom, top);
+                    }
                 }
-            } else {
+            } else if (Math.min(rect.width / rect.height, rect.height / rect.width) > minRatio) {
                 if (this.rng.random() < placeFreq) {
                     switch (style) {
                     case DrawStyle.Fill:
@@ -594,18 +604,19 @@ export class CellAutomaton {
                         rect.outline(value);
                         break;
                     }
+                    drawn.push(rect);
                 }
             }
         }
+        return drawn;
     }
 }
 
 const container = document.body.appendChild(document.createElement("div"));
 container.style.display = "inline-block";
-function main() {
-    const numPerSide = 1;
-    const palette = [Black, White, White];
-    const ca = new CellAutomaton(50 * numPerSide, 50 * numPerSide);
+function village() {
+    const palette = [Black, Red, White];
+    const ca = new CellAutomaton(50, 50);
     const canvas = container.appendChild(document.createElement("canvas"));
     canvas.style.backgroundColor = Black;
     const ctx = assertNotNull(canvas.getContext("2d"));
@@ -614,44 +625,99 @@ function main() {
     ctx.scale(TILE_SZ, TILE_SZ);
     ca.bindParams(ctx, palette);
 
+    const margin = 30;
     const commands = new CommandRunner([
         () => {
-            ca.partition(200, 0.1, 0.5, 3, DrawStyle.Fill, CellState.Alive);
+            ca.bounds.shrink(ca.rng.genrand_int32() % 5).fill(CellState.Alive);
+            ca.draw();
+            ca.store("border");
+            ca.clear();
+        },
+        () => {
+            let partition: Array<Rectangle>;
+            do {
+                partition = ca.partition(
+                    ca.rng.genrand_int32() % 300 + 150,
+                    ca.rng.random() * 0.5 + 0.2,
+                    0.3,
+                    ca.rng.random() + 0.3,
+                    ca.rng.genrand_int32() % 4 + 3 + ca.rng.genrand_int32() % 3,
+                    DrawStyle.Fill,
+                    CellState.Alive
+                );
+            } while (partition.length < 2);
+            for (const rect of partition) {
+                rect.translate(
+                    ca.rng.genrand_int32() % 2 - 1,
+                    ca.rng.genrand_int32() % 2 - 1
+                ).outline(CellState.Alive);
+            }
+            ca.draw();
+            return () => {
+                ca.margin(margin);
+                canvas.width = ca.width * TILE_SZ;
+                canvas.height = ca.height * TILE_SZ;
+                ctx.scale(TILE_SZ, TILE_SZ);
+                ca.draw();
+                return () => {
+                    ca.useRule(RuleKind.VichniacVote, ca.rng.genrand_int32() % 3);
+                    ca.useRule(RuleKind.Grow, 1);
+                    ca.draw();
+                    ca.store("houseinteriors");
+                    return () => {
+                        ca.useRule(RuleKind.Grow, 2);
+                        ca.draw();
+                        ca.store("housewalls");
+                        return () => {
+                            for (const rect of partition) {
+                                ca.rectangle.around(
+                                    margin + rect.centerX,
+                                    margin + rect.centerY,
+                                    ca.rng.genrand_int32() % Math.floor(rect.height / 2) + rect.height,
+                                    ca.rng.genrand_int32() % Math.floor(rect.width / 2) + rect.width
+                                ).outline(CellState.Alive);
+                            }
+                            ca.draw();
+                        };
+                    };
+                };
+            };
+        },
+        () => {
+            ca.add(ca.load("border"), margin, margin);
             ca.draw();
         },
         () => {
-            ca.margin(50);
-            canvas.width = ca.width * TILE_SZ;
-            canvas.height = ca.height * TILE_SZ;
-            ctx.scale(TILE_SZ, TILE_SZ);
+            ca.useRule(RuleKind.Grow, ca.rng.genrand_int32() % 3 + 5);
+            ca.useRule(RuleKind.VichniacVote, ca.rng.genrand_int32() % 2);
+            ca.useRule(RuleKind.Grow, 1);
             ca.draw();
+            ca.store("villageinterior");
         },
-        ...Array(0).fill(() => {
-            ca.useRule(RuleKind.VichniacVote);
-            ca.update(2);
-            ca.draw();
-        }),
         () => {
-            ca.store("inside");
-            ca.useRule(RuleKind.Grow);
-            ca.update(1);
+            ca.useRule(RuleKind.Grow, ca.rng.genrand_int32() % 2 + 4);
             ca.draw();
         },
         () => {
-            ca.useRule(RuleKind.VichniacVote);
-            ca.update(2);
+            ca.subtract(ca.load("villageinterior"));
             ca.draw();
         },
         () => {
-            const inside = ca.load("inside");
+            ca.useRule(RuleKind.VichniacVote, 2);
             ca.quantize(2);
-            inside.quantize(2);
-            ca.subtract(inside);
+            ca.draw();
+        },
+        () => {
+            ca.add(ca.load("housewalls"));
+            ca.draw();
+        },
+        () => {
+            ca.subtract(ca.load("houseinteriors"));
             ca.draw();
         }
     ]);
 
-    commands.interactive();
+    commands.run();
 }
 
-main();
+window.onclick = village;

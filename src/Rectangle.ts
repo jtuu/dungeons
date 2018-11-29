@@ -95,6 +95,10 @@ export class Rectangle extends Shape {
     public clone(): Rectangle {
         return new Rectangle(this.system, this.x, this.y, this.width, this.height);
     }
+
+    public translate(dx: number, dy: number): Rectangle {
+        return new Rectangle(this.system, this.x + dx, this.y + dy, this.width, this.height);
+    }
 }
 
 export class RectangleFactory {

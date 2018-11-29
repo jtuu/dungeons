@@ -66,29 +66,28 @@ export class Polygon extends Shape {
     }
     
     public fill(value: CellState) {
-        const bb = this.getBoundingBox();
-        const nodeX: Array<number> = [];
-        for (let pxy = bb.y; pxy < bb.bottom; pxy++) {
+        for (let pxy = this.system.bounds.top; pxy < this.system.bounds.bottom; pxy++) {
+            const nodeX: Array<number> = [];
             let j = this.vertices.length - 1;
             for (let i = 0; i < this.vertices.length; i++) {
                const [xi, yi] = this.vertices[i];
                const [xj, yj] = this.vertices[j];
                if (yi < pxy && yj >= pxy || yj < pxy && yi >= pxy) {
-                   nodeX.push(xi + (pxy - yi) / (yj - yi) * (xj - xi));
+                   nodeX.push(Math.floor(xi + (pxy - yi) / (yj - yi) * (xj - xi)));
                 }
                 j = i;
             }
             nodeX.sort((a, b) => a - b);
             for (let i = 0; i < nodeX.length; i += 2) {
-                if (nodeX[i] >= bb.right) { break; }
-                if (nodeX[i + 1] > bb.left) {
-                    if (nodeX[i] < bb.left) {
-                        nodeX[i] = bb.left;
+                if (nodeX[i] >= this.system.bounds.right) { break; }
+                if (nodeX[i + 1] > this.system.bounds.left) {
+                    if (nodeX[i] < this.system.bounds.left) {
+                        nodeX[i] = this.system.bounds.left;
                     }
-                    if (nodeX[i + 1] > bb.right) {
-                        nodeX[i + 1] = bb.right;
+                    if (nodeX[i + 1] > this.system.bounds.right) {
+                        nodeX[i + 1] = this.system.bounds.right;
                     }
-                    for (let pxx = nodeX[i]; pxx < nodeX[i + 1]; pxx++) {
+                    for (let pxx = nodeX[i], j = 0; pxx < nodeX[i + 1]; pxx++, j++) {
                         this.system.grid[pxy * this.system.width + pxx] = value;
                     }
                 }
@@ -203,5 +202,20 @@ export class Polygon extends Shape {
         const dx = cx - bb.x - Math.floor(bb.width / 2);
         const dy = cy - bb.y - Math.floor(bb.height / 2);
         this.translate(dx, dy);
+    }
+}
+
+export class PolygonFactory {
+    constructor(private readonly system: CellAutomaton) {}
+
+    public regular(cx: number, cy: number, n: number, r: number): Polygon {
+        const verts: Array<Vec2> = [];
+        const step = Math.PI * 2 / n;
+        for (let i = 0, a = 0; i < n; i++, a += step) {
+            const x = Math.floor(cx + Math.cos(a) * r);
+            const y = Math.floor(cy + Math.sin(a) * r);
+            verts.push([x, y]);
+        }
+        return new Polygon(this.system, verts);
     }
 }

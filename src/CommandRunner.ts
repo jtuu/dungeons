@@ -32,4 +32,14 @@ export class CommandRunner {
             iter.next();
         });
     }
+
+    public delayed(ms: number) {
+        const iter = CommandRunner.processCommands(this.commands);
+        setTimeout(function run() {
+            const result = iter.next();
+            if (!result.done) {
+                setTimeout(run, ms);
+            }
+        }, ms);
+    }
 }
