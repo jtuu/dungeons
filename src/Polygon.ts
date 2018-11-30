@@ -176,11 +176,12 @@ export class Polygon extends Shape {
         return new Polygon(this.system, this.vertices.slice());
     }
 
-    public translate(dx: number, dy: number) {
+    public translate(dx: number, dy: number): Polygon {
         for (const vert of this.vertices) {
             vert[0] += dx;
             vert[1] += dy;
         }
+        return this;
     }
 
     public scale(mulx: number, muly: number, ox?: number, oy?: number) {

@@ -99,6 +99,11 @@ export class Rectangle extends Shape {
     public translate(dx: number, dy: number): Rectangle {
         return new Rectangle(this.system, this.x + dx, this.y + dy, this.width, this.height);
     }
+
+    public intersects(rect: Rectangle): boolean {
+        return this.x < rect.right && this.right > rect.x &&
+               this.y < rect.bottom && this.bottom > rect.y;
+    }
 }
 
 export class RectangleFactory {

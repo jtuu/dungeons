@@ -1,14 +1,15 @@
-import { Black, Palette, White, Red } from "./color";
+import { Black, Palette, Red, White } from "./color";
 import { CommandRunner } from "./CommandRunner";
 import { Vec2 } from "./geometry";
 import { linearScale } from "./math";
 import { MersenneTwister } from "./mt";
 import { Polygon, PolygonFactory } from "./Polygon";
 import { Rectangle, RectangleFactory } from "./Rectangle";
+import { Shape } from "./Shape";
 import { StrictMap } from "./StrictMap";
 import { assertNotNull, enumValues } from "./utils";
 
-const TILE_SZ = 2;
+const TILE_SZ = 32;
 
 export enum CellState {
     Dead,
@@ -35,6 +36,7 @@ type Rule = (idx: number, x: number, y: number) => CellState;
 enum RuleKind {
     VichniacVote,
     Grow,
+    Shrink,
     Invert,
     Dunno
 }
@@ -50,6 +52,7 @@ export class CellAutomaton {
     protected readonly ruleMap: StrictMap<RuleKind, Rule> = new StrictMap([
         [RuleKind.VichniacVote, this.ruleVichniacVote],
         [RuleKind.Grow, this.ruleGrow],
+        [RuleKind.Shrink, this.ruleShrink],
         [RuleKind.Invert, this.ruleInvert],
         [RuleKind.Dunno, this.ruleDunno]
     ]);
@@ -78,7 +81,8 @@ export class CellAutomaton {
     public ctx?: CanvasRenderingContext2D;
     public palette?: Palette;
     protected bounds_: Rectangle;
-    protected storage: StrictMap<string, CellAutomaton> = new StrictMap();
+    protected cellStorage: StrictMap<string, CellAutomaton> = new StrictMap();
+    protected shapeStorage: StrictMap<string, Shape> = new StrictMap();
 
     constructor(
         width: number,
@@ -240,12 +244,42 @@ export class CellAutomaton {
         return CellState.Dead;
     }
 
+    protected ruleShrink(idx: number, x: number, y: number): CellState {
+        const state = this.readGrid[idx];
+        if (state === CellState.Dead) {
+            return CellState.Dead;
+        }
+        for (const [, , n] of this.vonNeumannNeighbors(this.readGrid, x, y)) {
+            if (n === CellState.Dead) {
+                return CellState.Dead;
+            }
+        }
+        return state;
+    }
+
     protected ruleInvert(idx: number, _x: number, _y: number): CellState {
         return this.readGrid[idx] ^ 1;
     }
 
-    protected ruleDunno(idx: number, _x: number, _y: number): CellState {
+    protected ruleDunno(idx: number, x: number, y: number): CellState {
         const state = this.readGrid[idx];
+        let numAlive = 0;
+        for (const [, , n] of this.mooreNeighbors(this.readGrid, x, y)) {
+            if (n !== CellState.Dead) {
+                numAlive++;
+            }
+        }
+        if (state === CellState.Alive) {
+            if (numAlive > 3) {
+                return CellState.Alive;
+            } else {
+                return CellState.Dead;
+            }
+        } else {
+            if (numAlive > 4) {
+                return CellState.Alive;
+            }
+        }
         return state;
     }
 
@@ -541,12 +575,20 @@ export class CellAutomaton {
         return poly;
     }
 
-    public store(name: string) {
-        this.storage.set(name, this.clone());
+    public storeCells(name: string) {
+        this.cellStorage.set(name, this.clone());
     }
 
-    public load(name: string): CellAutomaton {
-        return this.storage.get(name);
+    public storeShape(name: string, shape: Shape) {
+        this.shapeStorage.set(name, shape);
+    }
+
+    public loadCells(name: string): CellAutomaton {
+        return this.cellStorage.get(name);
+    }
+
+    public loadShape(name: string): Shape {
+        return this.shapeStorage.get(name);
     }
 
     public margin(marginSize: number) {
@@ -563,6 +605,11 @@ export class CellAutomaton {
         this.centerY_ = Math.floor(this.height_ / 2);
         this.bounds_ = new Rectangle(this, 0, 0, this.width_, this.height_);
         this.add(clone, marginSize, marginSize);
+        if (this.ctx !== undefined) {
+            this.ctx.canvas.width = this.width_ * TILE_SZ;
+            this.ctx.canvas.height = this.height_ * TILE_SZ;
+            this.ctx.scale(TILE_SZ, TILE_SZ);
+        }
     }
 
     public partition(minArea: number, minRatio: number, sizeVar: number, placeFreq: number, margin: number, style: DrawStyle, value: CellState): Array<Rectangle> {
@@ -610,13 +657,50 @@ export class CellAutomaton {
         }
         return drawn;
     }
+
+    public random(freq: number, value: CellState) {
+        for (let i = 0; i < this.readGrid.length; i++) {
+            if (this.rng.random() < freq) {
+                this.readGrid[i] = value;
+            }
+        }
+    }
+
+    // nearest neighbor
+    public scale(scale: number) {
+        const clone = this.clone();
+        this.width_ = Math.floor(this.width_ * scale);
+        this.height_ = Math.floor(this.height_ * scale);
+        const size = this.width_ * this.height_;
+        this.grid1 = new Grid(size);
+        this.grid2 = new Grid(size);
+        this.readGrid = this.grid1;
+        this.writeGrid = this.grid2;
+        this.centerX_ = Math.floor(this.width_ / 2);
+        this.centerY_ = Math.floor(this.height_ / 2);
+        this.bounds_ = new Rectangle(this, 0, 0, this.width_, this.height_);
+        for (let y = 0; y < this.height_; y++) {
+            const sy = Math.floor(y / scale);
+            for (let x = 0; x < this.width_; x++) {
+                const sx = Math.floor(x / scale);
+                const i = y * this.width_ + x;
+                const si = sy * clone.width_ + sx;
+                this.readGrid[i] = clone.grid[si];
+            }
+        }
+        if (this.ctx !== undefined) {
+            this.ctx.canvas.width = this.width_ * TILE_SZ;
+            this.ctx.canvas.height = this.height_ * TILE_SZ;
+            this.ctx.scale(TILE_SZ, TILE_SZ);
+        }
+    }
 }
 
 const container = document.body.appendChild(document.createElement("div"));
 container.style.display = "inline-block";
-function village() {
+function village(): [CellAutomaton, CommandRunner] {
     const palette = [Black, Red, White];
-    const ca = new CellAutomaton(50, 50);
+    const ca = new CellAutomaton(30, 30);
     const canvas = container.appendChild(document.createElement("canvas"));
     canvas.style.backgroundColor = Black;
     const ctx = assertNotNull(canvas.getContext("2d"));
@@ -625,49 +709,81 @@ function village() {
     ctx.scale(TILE_SZ, TILE_SZ);
     ca.bindParams(ctx, palette);
 
-    const margin = 30;
+    const margin = 60;
     const commands = new CommandRunner([
         () => {
             ca.bounds.shrink(ca.rng.genrand_int32() % 5).fill(CellState.Alive);
             ca.draw();
-            ca.store("border");
+            ca.storeCells("border");
             ca.clear();
         },
         () => {
+            let entrance: Rectangle;
+            const entranceSize = ca.rng.genrand_int32() % 2 + 6;
+            const entranceSizeHalf = Math.floor(entranceSize / 2);
+            const entranceLengthMul = 3;
+            if (ca.rng.genrand_int32() % 2) {
+                const len = ca.width * entranceLengthMul;
+                entrance = ca.rectangle.at(
+                    ca.centerX - ca.rng.genrand_int32() % 2 * len,
+                    ca.centerY - entranceSizeHalf,
+                    len,
+                    entranceSize
+                );
+            } else {
+                const len = ca.width * entranceLengthMul;
+                entrance = ca.rectangle.at(
+                    ca.centerX - entranceSizeHalf,
+                    ca.centerY - ca.rng.genrand_int32() % 2 * (len),
+                    entranceSize,
+                    len
+                );
+            }
+            ca.storeShape("entrance", entrance);
             let partition: Array<Rectangle>;
             do {
                 partition = ca.partition(
-                    ca.rng.genrand_int32() % 300 + 150,
+                    ca.rng.genrand_int32() % 150 + 40,
                     ca.rng.random() * 0.5 + 0.2,
-                    0.3,
+                    0.1,
                     ca.rng.random() + 0.3,
-                    ca.rng.genrand_int32() % 4 + 3 + ca.rng.genrand_int32() % 3,
+                    ca.rng.genrand_int32() % 4 + 7 + ca.rng.genrand_int32() % 3,
                     DrawStyle.Fill,
                     CellState.Alive
                 );
-            } while (partition.length < 2);
-            for (const rect of partition) {
-                rect.translate(
-                    ca.rng.genrand_int32() % 2 - 1,
-                    ca.rng.genrand_int32() % 2 - 1
-                ).outline(CellState.Alive);
+                const touchEntrance: Array<number> = [];
+                for (let i = 0; i < partition.length; i++) {
+                    const rect = partition[i];
+                    if (rect.intersects(entrance)) {
+                        rect.fill(CellState.Dead);
+                        touchEntrance.push(i);
+                    }
+                }
+                for (const i of touchEntrance) {
+                    partition.splice(i, 1);
+                }
+            } while (partition.length < 3);
+            if (ca.rng.genrand_int31() % 3) {
+                for (const rect of partition) {
+                    rect.translate(
+                        ca.rng.genrand_int32() % 2 - 1,
+                        ca.rng.genrand_int32() % 2 - 1
+                    ).outline(CellState.Alive);
+                }
             }
             ca.draw();
             return () => {
                 ca.margin(margin);
-                canvas.width = ca.width * TILE_SZ;
-                canvas.height = ca.height * TILE_SZ;
-                ctx.scale(TILE_SZ, TILE_SZ);
                 ca.draw();
                 return () => {
                     ca.useRule(RuleKind.VichniacVote, ca.rng.genrand_int32() % 3);
                     ca.useRule(RuleKind.Grow, 1);
                     ca.draw();
-                    ca.store("houseinteriors");
+                    ca.storeCells("houseinteriors");
                     return () => {
                         ca.useRule(RuleKind.Grow, 2);
                         ca.draw();
-                        ca.store("housewalls");
+                        ca.storeCells("housewalls");
                         return () => {
                             for (const rect of partition) {
                                 ca.rectangle.around(
@@ -684,22 +800,26 @@ function village() {
             };
         },
         () => {
-            ca.add(ca.load("border"), margin, margin);
+            ca.add(ca.loadCells("border"), margin, margin);
             ca.draw();
         },
         () => {
-            ca.useRule(RuleKind.Grow, ca.rng.genrand_int32() % 3 + 5);
+            ca.useRule(RuleKind.Grow, ca.rng.genrand_int32() % 3 + 3);
             ca.useRule(RuleKind.VichniacVote, ca.rng.genrand_int32() % 2);
             ca.useRule(RuleKind.Grow, 1);
             ca.draw();
-            ca.store("villageinterior");
+            ca.storeCells("villageinterior");
         },
         () => {
             ca.useRule(RuleKind.Grow, ca.rng.genrand_int32() % 2 + 4);
             ca.draw();
         },
         () => {
-            ca.subtract(ca.load("villageinterior"));
+            ca.subtract(ca.loadCells("villageinterior"));
+            ca.draw();
+        },
+        () => {
+            ca.loadShape("entrance").translate(margin, margin).fill(CellState.Dead);
             ca.draw();
         },
         () => {
@@ -708,11 +828,116 @@ function village() {
             ca.draw();
         },
         () => {
-            ca.add(ca.load("housewalls"));
+            ca.add(ca.loadCells("housewalls"));
             ca.draw();
         },
         () => {
-            ca.subtract(ca.load("houseinteriors"));
+            ca.subtract(ca.loadCells("houseinteriors"));
+            ca.draw();
+        },
+        () => {
+            const entrance = ca.loadShape("entrance").translate(margin, margin);
+            if (entrance instanceof Rectangle) {
+                entrance.shrink(2).fill(CellState.Alive);
+            }
+            ca.draw();
+        }
+    ]);
+
+    return [ca, commands];
+}
+
+function forestvillage() {
+    const vill = village();
+    vill[1].run();
+
+    const palette = [Black, Red, White];
+    const ca = new CellAutomaton(30, 30);
+    const canvas = container.appendChild(document.createElement("canvas"));
+    canvas.style.backgroundColor = Black;
+    const ctx = assertNotNull(canvas.getContext("2d"));
+    canvas.width = ca.width * TILE_SZ;
+    canvas.height = ca.height * TILE_SZ;
+    ctx.scale(TILE_SZ, TILE_SZ);
+    ca.bindParams(ctx, palette);
+
+    const commands = new CommandRunner([
+        () => {
+            ca.rectangle.around(ca.centerX, ca.centerY, ca.width - 19, ca.height - 11).fill(CellState.Alive);
+            ca.rectangle.around(ca.centerX, ca.centerY, ca.width - 11, ca.height - 19).outline(CellState.Alive);
+            ca.draw();
+        },
+        () => {
+            ca.useRule(RuleKind.VichniacVote, 10);
+            ca.draw();
+        },
+        () => {
+            ca.random(0.40, CellState.Alive);
+            ca.draw();
+        },
+        () => {
+            ca.margin(10);
+            ca.draw();
+        },
+        () => {
+            ca.random(0.40, CellState.Alive);
+            ca.draw();
+        },
+        () => {
+            ca.margin(10);
+            ca.draw();
+        },
+        () => {
+            ca.useRule(RuleKind.Dunno, 10);
+            ca.draw();
+            ca.storeCells("pathinner");
+        },
+        () => {
+            ca.useRule(RuleKind.Grow, 1);
+            ca.draw();
+        },
+        () => {
+            ca.subtract(ca.loadCells("pathinner"));
+            ca.draw();
+            ca.storeCells("central");
+        },
+        () => {
+            const central = ca.clone();
+            central.floodFill(ca.centerX, ca.centerY, CellState.Alive);
+            central.subtract(ca);
+            ca.clear();
+            ca.add(central);
+            ca.useRule(RuleKind.Grow, 1);
+            ca.draw();
+        },
+        () => {
+            ca.subtract(ca.loadCells("pathinner"));
+            ca.draw();
+        },
+        () => {
+            ca.scale(3);
+            ca.draw();
+        },
+        () => {
+            ca.useRule(RuleKind.VichniacVote, 10);
+            ca.quantize(2);
+            ca.draw();
+            ca.storeCells("path");
+        },
+        () => {
+            ca.useRule(RuleKind.Shrink, 1);
+            ca.draw();
+        },
+        () => {
+            ca.add(vill[0], ca.centerX - Math.floor(vill[0].width / 2), ca.centerY - Math.floor(vill[0].height / 2));
+            ca.draw();
+        },
+        () => {
+            const path = ca.loadCells("path");
+            const clone = path.clone();
+            clone.floodFill(0, 0, CellState.Alive);
+            clone.subtract(path);
+            ca.subtract(clone);
             ca.draw();
         }
     ]);
@@ -720,4 +945,4 @@ function village() {
     commands.run();
 }
 
-window.onclick = village;
+forestvillage();

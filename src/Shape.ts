@@ -8,6 +8,7 @@ export abstract class Shape {
         protected readonly system: CellAutomaton
     ) {}
 
+    public abstract translate(dx: number, dy: number): Shape;
     public abstract fill(value: CellState): void;
     public abstract outline(value: CellState): void;
     public abstract clone(): Shape;
