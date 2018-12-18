@@ -9,7 +9,7 @@ import { Shape } from "./Shape";
 import { StrictMap } from "./StrictMap";
 import { assertNotNull, enumValues } from "./utils";
 
-const TILE_SZ = 32;
+const TILE_SZ = 4;
 
 export enum CellState {
     Dead,
@@ -144,21 +144,23 @@ export class CellAutomaton {
         this.swapGrids();
     }
 
-    protected *neighbors(grid: Grid, cx: number, cy: number, offsets: Array<Vec2>): IterableIterator<Cell> {
+    protected neighbors(grid: Grid, cx: number, cy: number, offsets: Array<Vec2>): Array<Cell> {
+        const neighbors: Array<Cell> = [];
         for (const [ox, oy] of offsets) {
             const x = cx + ox;
             const y = cy + oy;
             if (this.withinBounds(x, y)) {
-                yield [x, y, grid[y * this.width + x]];
+                neighbors.push([x, y, grid[y * this.width + x]]);
             }
         }
+        return neighbors;
     }
 
-    protected mooreNeighbors(grid: Grid, cx: number, cy: number): IterableIterator<Cell> {
+    protected mooreNeighbors(grid: Grid, cx: number, cy: number): Array<Cell> {
         return this.neighbors(grid, cx, cy, CellAutomaton.mooreOffsets);
     }
 
-    protected vonNeumannNeighbors(grid: Grid, cx: number, cy: number): IterableIterator<Cell> {
+    protected vonNeumannNeighbors(grid: Grid, cx: number, cy: number): Array<Cell> {
         return this.neighbors(grid, cx, cy, CellAutomaton.vonNeumannOffsets);
     }
 
@@ -215,9 +217,20 @@ export class CellAutomaton {
         if (state !== CellState.Dead) {
             numAlive++;
         }
+        /*
         for (const [, , n] of this.mooreNeighbors(this.readGrid, x, y)) {
             if (n !== CellState.Dead) {
                 numAlive++;
+            }
+        }
+        */
+        for (const [ox, oy] of CellAutomaton.mooreOffsets) {
+            const nx = x + ox;
+            const ny = y + oy;
+            if (this.withinBounds(nx, ny)) {
+                if (this.readGrid[ny * this.width + nx] !== CellState.Dead) {
+                    numAlive++;
+                }
             }
         }
         if (numAlive <= 4) {
@@ -865,40 +878,40 @@ function forestvillage() {
         () => {
             ca.rectangle.around(ca.centerX, ca.centerY, ca.width - 19, ca.height - 11).fill(CellState.Alive);
             ca.rectangle.around(ca.centerX, ca.centerY, ca.width - 11, ca.height - 19).outline(CellState.Alive);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.useRule(RuleKind.VichniacVote, 10);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.random(0.40, CellState.Alive);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.margin(10);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.random(0.40, CellState.Alive);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.margin(10);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.useRule(RuleKind.Dunno, 10);
-            ca.draw();
+            // ca.draw();
             ca.storeCells("pathinner");
         },
         () => {
             ca.useRule(RuleKind.Grow, 1);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.subtract(ca.loadCells("pathinner"));
-            ca.draw();
+            // ca.draw();
             ca.storeCells("central");
         },
         () => {
@@ -908,29 +921,29 @@ function forestvillage() {
             ca.clear();
             ca.add(central);
             ca.useRule(RuleKind.Grow, 1);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.subtract(ca.loadCells("pathinner"));
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.scale(3);
-            ca.draw();
+            // ca.draw();
         },
         () => {
             ca.useRule(RuleKind.VichniacVote, 10);
             ca.quantize(2);
-            ca.draw();
+            // ca.draw();
             ca.storeCells("path");
         },
         () => {
             ca.useRule(RuleKind.Shrink, 1);
-            ca.draw();
+            // ca.draw();
         },
         () => {
-            ca.add(vill[0], ca.centerX - Math.floor(vill[0].width / 2), ca.centerY - Math.floor(vill[0].height / 2));
-            ca.draw();
+            //ca.add(vill[0], ca.centerX - Math.floor(vill[0].width / 2), ca.centerY - Math.floor(vill[0].height / 2));
+            // ca.draw();
         },
         () => {
             const path = ca.loadCells("path");
@@ -939,10 +952,83 @@ function forestvillage() {
             clone.subtract(path);
             ca.subtract(clone);
             ca.draw();
+        },
+        () => {
+            ca.scale(0.33);
+            ca.useRule(RuleKind.Grow, 1);
+            ca.draw();
         }
     ]);
 
     commands.run();
 }
 
-forestvillage();
+function betterLayout() {
+    const palette = [Black, Red, White];
+    const ca = new CellAutomaton(30, 30);
+    const canvas = container.appendChild(document.createElement("canvas"));
+    canvas.style.backgroundColor = Black;
+    const ctx = assertNotNull(canvas.getContext("2d"));
+    canvas.width = ca.width * TILE_SZ;
+    canvas.height = ca.height * TILE_SZ;
+    ctx.scale(TILE_SZ, TILE_SZ);
+    ca.bindParams(ctx, palette);
+
+    const points: Array<Vec2> = [];
+    const commands = new CommandRunner([
+        () => {
+            const maxNumPoints = ca.rng.genrand_int32() % 4 + 6;
+            let numPoints = 0;
+            let x = ca.bounds.centerX;
+            let y = ca.bounds.centerY;
+            while (numPoints < maxNumPoints) {
+                const i = y * ca.width + x;
+                if (ca.grid[i] === CellState.Dead) {
+                    ca.grid[i] = CellState.Alive;
+                    numPoints = points.push([x, y]);
+                }
+                x += ca.rng.genrand_int32() % 3 - 1;
+                y += ca.rng.genrand_int32() % 3 - 1;
+            }
+            ca.draw();
+        },
+        ...Array(10).fill(() => {
+            const angles: Array<number> = [];
+            const scaleFactor = 1.44;
+            for (let i = 0; i < points.length; i++) {
+                const point = points[i];
+                const idx = point[1] * ca.width + point[0];
+                ca.grid[idx] = CellState.Dead;
+                let sumX = 0;
+                let sumY = 0;
+                for (const other of points) {
+                    if (other === point) { continue; }
+                    const dx = other[0] - point[0];
+                    const dy = other[1] - point[1];
+                    if (dx !== 0) {
+                        sumX += 1 / dx;
+                    }
+                    if (dy !== 0) {
+                        sumY += 1 / dy;
+                    }
+                }
+                angles[i] = Math.atan2(sumY, sumX);
+            }
+            for (let i = 0; i < points.length; i++) {
+                const point = points[i];
+                const angle = angles[i];
+                const dx = Math.round(Math.cos(angle) * scaleFactor);
+                const dy = Math.round(Math.sin(angle) * scaleFactor);
+                point[0] -= dx;
+                point[1] -= dy;
+                const idx = point[1] * ca.width + point[0];
+                ca.grid[idx] = CellState.Alive;
+            }
+            ca.draw();
+        })
+    ]);
+
+    commands.interactive();
+}
+
+betterLayout();
